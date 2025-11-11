@@ -11,12 +11,8 @@ Output:
 Usage:
   pip install pandas openpyxl "qrcode[pil]" reportlab Pillow
   python build_pages_and_qr.py
-
-Tip:
-  Change BASE_URL to your real hosting path before running, e.g.:
-  BASE_URL = "https://hms.example.org/asset/pages/"
 """
-import os, re, html
+import os, re, html, sys
 import pandas as pd
 from pathlib import Path
 import qrcode
@@ -31,8 +27,8 @@ OUT = Path("SmartAsset_QR_Pages")
 PAGES = OUT / "pages"
 QRPNG = OUT / "qrcodes"
 
-# !!! CHANGE THIS TO YOUR REAL HOSTING URL (ending with '/')
-BASE_URL = "https://example.com/smart-asset/pages/"
+# === ใช้ของคุณแล้ว ===
+BASE_URL = "https://copteryokky.github.io/SmartAsset_QR_Package/pages/"
 
 def pick_id(row):
     for k in ["AssetID","รหัสเครื่องมือห้องปฏิบัติการ","รหัส","รหัสครุภัณฑ์","Code","ID","Asset Id","Asset_ID"]:
@@ -87,17 +83,21 @@ def render_page(title, rows):
 </html>"""
 
 def main():
-    OUT.mkdir(exist_ok=True, parents=True); PAGES.mkdir(exist_ok=True); QRPNG.mkdir(exist_ok=True)
+    # เช็คไฟล์ Excel ก่อน
+    if not Path(EXCEL_PATH).exists():
+        print(f"[ERROR] ไม่พบไฟล์ {EXCEL_PATH} ในโฟลเดอร์นี้", file=sys.stderr)
+        sys.exit(1)
+
+    OUT.mkdir(parents=True, exist_ok=True); PAGES.mkdir(exist_ok=True); QRPNG.mkdir(exist_ok=True)
     xl = pd.ExcelFile(EXCEL_PATH)
     sheet_name = xl.sheet_names[0]
     df = xl.parse(sheet_name).dropna(how="all").reset_index(drop=True)
 
-    # Preferred order for fields (others appended after)
     prefer = ["ลำดับ","ชื่อ","รหัสเครื่องมือห้องปฏิบัติการ","AssetID","ปี","ยี่ห้อ","โมเดล","หมายเลขเครื่อง",
               "ต้นทุนต่อหน่วย","สถานะ","สถานที่ใช้งาน (ปัจจุบัน)","ผู้รับผิดชอบ (ปัจจุบัน)","รูปภาพ","QR Code","_qr_image_path"]
 
     records = []
-    for i, row in df.iterrows():
+    for _, row in df.iterrows():
         asset_id = pick_id(row)
         slug = slugify(asset_id)
 
@@ -121,18 +121,14 @@ def main():
 
         records.append((asset_id, html_path.name))
 
-    # Index page
+    # index.html
     idx = "<!doctype html><meta charset='utf-8'><title>Smart Asset – Index</title><h2>Smart Asset – รายการหน้า</h2><ol>"
     for asset_id, fname in records:
         idx += f"<li><a href='{fname}'>{html.escape(asset_id)}</a></li>"
     idx += "</ol>"
     (PAGES / "index.html").write_text(idx, encoding="utf-8")
 
-    # PDF (A4 3x8)
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.lib.utils import ImageReader
+    # รวม QR ลง A4
     page_w, page_h = A4
     c = canvas.Canvas((OUT / "qr_labels_A4_pages.pdf").as_posix(), pagesize=A4)
     left_margin = 10*mm; right_margin = 10*mm; top_margin = 12*mm; bottom_margin = 12*mm
@@ -143,24 +139,22 @@ def main():
 
     pngs = sorted(QRPNG.glob("*.png"))
     for i, png in enumerate(pngs):
-        r = (i // cols) % rows
-        cidx = i % cols
-        if i > 0 and r == 0 and cidx == 0:
+        if i and i % (cols*rows) == 0:
             c.showPage()
         within = i % (cols*rows)
-        r = within // cols; cidx = within % cols
+        r = within // cols
+        cidx = within % cols
         x0 = left_margin + cidx * cell_w
         y0 = bottom_margin + (rows - 1 - r) * cell_h
 
-        from PIL import Image
-        img = Image.open(png)
-        iw, ih = img.size
+        im = Image.open(png)
+        iw, ih = im.size
         target_w = 42*mm; target_h = 52*mm
         aspect = iw/ih
         w = target_w; h = target_w/aspect
         if h > target_h: h = target_h; w = target_h*aspect
         x = x0 + (cell_w - w)/2; y = y0 + (cell_h - h)/2
-        c.drawImage(ImageReader(img), x, y, width=w, height=h, preserveAspectRatio=True)
+        c.drawImage(ImageReader(im), x, y, width=w, height=h, preserveAspectRatio=True)
 
     c.save()
     print("Done. Open folder:", OUT.as_posix())
