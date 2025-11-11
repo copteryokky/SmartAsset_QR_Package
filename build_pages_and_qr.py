@@ -27,19 +27,24 @@ OUT = Path("SmartAsset_QR_Pages")
 PAGES = OUT / "pages"
 QRPNG = OUT / "qrcodes"
 
-# === ใช้ของคุณแล้ว ===
+# ใช้ของคุณแล้ว
 BASE_URL = "https://copteryokky.github.io/SmartAsset_QR_Package/pages/"
 
+# --- helpers ---------------------------------------------------------------
+def ensure_trailing_slash(url: str) -> str:
+    return url if url.endswith("/") else (url + "/")
+
 def pick_id(row):
-    for k in ["AssetID","รหัสเครื่องมือห้องปฏิบัติการ","รหัส","รหัสครุภัณฑ์","Code","ID","Asset Id","Asset_ID"]:
+    # ให้ "รหัสเครื่องมือห้องปฏิบัติการ" มาก่อน จากนั้นจึง AssetID (วิธีที่ดีที่สุด)
+    for k in ["รหัสเครื่องมือห้องปฏิบัติการ","AssetID","รหัส","รหัสครุภัณฑ์","Code","ID","Asset Id","Asset_ID"]:
         if k in row.index and pd.notna(row[k]) and str(row[k]).strip():
-            return str(row[k])
+            return str(row[k]).strip()
     return f"ROW-{int(row.name)+1}"
 
 def slugify(s):
-    s = str(s).strip()
-    s = re.sub(r"[^\w\-]+", "-", s, flags=re.UNICODE)
-    s = re.sub(r"-+", "-", s).strip("-")
+    s = str(s or "").strip()
+    s = re.sub(r"[^\w\-]+", "-", s, flags=re.UNICODE)  # เว้นวรรค/อักขระพิเศษ -> -
+    s = re.sub(r"-+", "-", s).strip("-")               # ลด -- ให้เหลือ -
     return s or "item"
 
 def render_page(title, rows):
@@ -82,13 +87,19 @@ def render_page(title, rows):
   </body>
 </html>"""
 
+# --- main ------------------------------------------------------------------
 def main():
     # เช็คไฟล์ Excel ก่อน
     if not Path(EXCEL_PATH).exists():
         print(f"[ERROR] ไม่พบไฟล์ {EXCEL_PATH} ในโฟลเดอร์นี้", file=sys.stderr)
         sys.exit(1)
 
-    OUT.mkdir(parents=True, exist_ok=True); PAGES.mkdir(exist_ok=True); QRPNG.mkdir(exist_ok=True)
+    base = ensure_trailing_slash(BASE_URL)
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    PAGES.mkdir(exist_ok=True)
+    QRPNG.mkdir(exist_ok=True)
+
     xl = pd.ExcelFile(EXCEL_PATH)
     sheet_name = xl.sheet_names[0]
     df = xl.parse(sheet_name).dropna(how="all").reset_index(drop=True)
@@ -97,10 +108,21 @@ def main():
               "ต้นทุนต่อหน่วย","สถานะ","สถานที่ใช้งาน (ปัจจุบัน)","ผู้รับผิดชอบ (ปัจจุบัน)","รูปภาพ","QR Code","_qr_image_path"]
 
     records = []
+    used_slugs = set()  # กันชื่อชน
+
     for _, row in df.iterrows():
         asset_id = pick_id(row)
         slug = slugify(asset_id)
 
+        # กันชื่อไฟล์ชน (เช่น LAB-001 ซ้ำ)
+        orig = slug
+        n = 2
+        while slug in used_slugs:
+            slug = f"{orig}-{n}"
+            n += 1
+        used_slugs.add(slug)
+
+        # จัดลำดับแถวแสดงผล
         used = set(); rows_kv = []
         for k in prefer:
             if k in row.index:
@@ -109,11 +131,13 @@ def main():
             if k not in used:
                 rows_kv.append((k, row[k]))
 
+        # HTML ต่อรายการ
         html_str = render_page(asset_id, rows_kv)
         html_path = PAGES / f"{slug}.html"
         html_path.write_text(html_str, encoding="utf-8")
 
-        page_url = f"{BASE_URL}{html_path.name}"
+        # QR → ชี้ไปหน้าออนไลน์
+        page_url = f"{base}{html_path.name}"
         qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
         qr.add_data(page_url); qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
@@ -121,14 +145,15 @@ def main():
 
         records.append((asset_id, html_path.name))
 
-    # index.html
+    # index.html (เรียงตามชื่อทรัพย์สิน/ID)
+    records_sorted = sorted(records, key=lambda x: str(x[0]))
     idx = "<!doctype html><meta charset='utf-8'><title>Smart Asset – Index</title><h2>Smart Asset – รายการหน้า</h2><ol>"
-    for asset_id, fname in records:
+    for asset_id, fname in records_sorted:
         idx += f"<li><a href='{fname}'>{html.escape(asset_id)}</a></li>"
     idx += "</ol>"
     (PAGES / "index.html").write_text(idx, encoding="utf-8")
 
-    # รวม QR ลง A4
+    # รวม QR ลง PDF (A4 3x8)
     page_w, page_h = A4
     c = canvas.Canvas((OUT / "qr_labels_A4_pages.pdf").as_posix(), pagesize=A4)
     left_margin = 10*mm; right_margin = 10*mm; top_margin = 12*mm; bottom_margin = 12*mm
